@@ -4,7 +4,7 @@ Compute satellite passes over some location.
 
 ## Requirements
 
-* (PyEphem)[http://rhodesmill.org/pyephem/]
+* [PyEphem](http://rhodesmill.org/pyephem/)
 
 ## Usage
 
