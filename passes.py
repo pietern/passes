@@ -2,10 +2,16 @@
 
 import ephem
 import os
+import signal
 import sys
 import math
 import re
+import subprocess
+import time
+import parsedatetime
 
+from datetime import datetime
+from time import mktime
 from optparse import OptionParser
 
 class TLEs:
@@ -78,13 +84,19 @@ class Main:
     self.pattern = re.compile(options.pattern)
     self.count = options.count
 
+  def date(self):
+    cal = parsedatetime.Calendar()
+    time_struct, _ = cal.parse(self.options.time)
+    return datetime.utcfromtimestamp(mktime(time_struct))
+
   def observer(self):
     observer = ephem.Observer()
     observer.lat = math.pi * self.options.lat / 180.0
     observer.lon = math.pi * self.options.lon / 180.0
+    observer.date = self.date()
     return observer
 
-  def run(self):
+  def run(self, args):
     obs = self.observer()
 
     passes = []
@@ -95,6 +107,56 @@ class Main:
     # Sort passes by AOS time
     passes = sorted(passes, key=lambda p: p.aos_time)
 
+    if self.options.execute:
+      if self.options.time != "now":
+        raise Exception("cannot execute in non-realtime mode")
+      self.execute(passes, args)
+    else:
+      self.display(passes)
+
+  # Take sorted list of passes, convert it into a list of
+  # lists of passes that overlap.
+  def passes_to_chunks(self, passes):
+    passes = passes[:]
+    chunks = []
+    while len(passes) > 0:
+      # Group overlapping passes together
+      chunk = [passes.pop(0)]
+      while len(passes) > 0:
+        if passes[0].aos_time <= chunk[-1].los_time:
+          chunk.append(passes.pop(0))
+        else:
+          break
+
+      chunks.append(chunk)
+    return chunks
+
+  def execute(self, passes, args):
+    chunks = self.passes_to_chunks(passes)
+    for chunk in range(chunks):
+      self.display(chunk)
+
+      # Wait until AOS
+      now = datetime.now()
+      aos = ephem.localtime(chunk[0].aos_time)
+      until_aos = (aos - now).total_seconds()
+      print("Sleeping %d seconds until AOS" % (until_aos))
+      time.sleep(until_aos)
+
+      # Run command for pass(es)
+      process = subprocess.Popen(args, preexec_fn=os.setsid)
+
+      # Wait until LOS
+      now = datetime.now()
+      los = ephem.localtime(chunk[-1].los_time)
+      until_los = (los - now).total_seconds()
+      print("Sleeping %d seconds until LOS" % (until_los))
+      time.sleep(until_los)
+
+      # Send the signal to all the process groups
+      os.killpg(os.getpgid(process.pid), signal.SIGTERM)
+
+  def display(self, passes):
     for p in passes:
       aos = ephem.localtime(p.aos_time)
       los = ephem.localtime(p.los_time)
@@ -123,6 +185,10 @@ def main():
       help='Number of passes per satellite')
   parser.add_option("-e", "--elevation", type='int', default=10,
       help='Minimal maximum elevation of pass')
+  parser.add_option("-t", "--time", type='string', default="now",
+      help='Time of observation')
+  parser.add_option("-x", action='store_true', dest='execute',
+      help='Execute command for the duration of one or more passes')
 
   (options, args) = parser.parse_args()
 
@@ -131,7 +197,7 @@ def main():
     sys.exit(1)
 
   m = Main(options)
-  m.run()
+  m.run(args)
 
 if __name__ == "__main__":
   main()
